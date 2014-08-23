@@ -168,7 +168,7 @@ if __name__ == '__main__':
         print "Reading url no. %s of %s --> %s " % (i+1,nos,url)
         html = urllib.urlopen(url).read()
         readable_article = Document(html).summary().encode('utf-8')
-        readable_title = Document(html).short_title()
+        readable_title = Document(html).short_title().encode('utf-8')
 
         manifest += '<item id="article_%s" href="article_%s.html" media-type="application/xhtml+xml"/>\n' % (i+1,i+1)
         spine += '<itemref idref="article_%s" />\n' % (i+1)
