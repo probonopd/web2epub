@@ -151,21 +151,8 @@ if __name__ == '__main__':
 
     stylesheet_tpl = '''
         p, body {
-            font-weight: normal;
-            font-style: normal;
-            font-variant: normal;
-            font-size: 1em;
-            line-height: 2.0;
-            text-align: left;
-            margin: 0 0 1em 0;
             orphans: 2;
             widows: 2;
-        }
-        h1{
-            color: blue;
-        }
-        h2 {
-            margin: 5px;
         }
     '''
 
