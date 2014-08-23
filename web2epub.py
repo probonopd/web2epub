@@ -63,11 +63,6 @@ if __name__ == '__main__':
     #Metadata about the book
     info = dict(title=options.title,
             author=options.author,
-            rights='Copyright respective page authors',
-            publisher='Rupesh Kumar',
-            ISBN='978-1449921880',
-            subject='Blogs',
-            description='Articles extracted from blogs for archive purposes',
             date=time.strftime('%Y-%m-%d'),
             front_cover= cpath,
             front_cover_type = ctype
@@ -91,13 +86,7 @@ if __name__ == '__main__':
         <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
         <dc:title>%(title)s</dc:title>
         <dc:creator>%(author)s</dc:creator>
-        <dc:language>en</dc:language>
-        <dc:rights>%(rights)s</dc:rights>
-        <dc:publisher>%(publisher)s</dc:publisher>
-        <dc:subject>%(subject)s</dc:subject>
-        <dc:description>%(description)s</dc:description>
         <dc:date>%(date)s</dc:date>
-        <dc:identifier id="bookid">%(ISBN)s</dc:identifier>
         <meta name="cover" content="cover-image" />
         </metadata>
         <manifest>
@@ -121,7 +110,6 @@ if __name__ == '__main__':
                  "http://www.daisy.org/z3986/2005/ncx-2005-1.dtd">
         <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
         <head>
-        <meta name="dtb:uid" content="%(ISBN)s"/>
         <meta name="dtb:depth" content="1"/>
         <meta name="dtb:totalPageCount" content="0"/>
         <meta name="dtb:maxPageNumber" content="0"/>
