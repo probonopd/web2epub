@@ -169,9 +169,12 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
         spine += '<itemref idref="article_%s" />\n' % (i+1)
         toc += '<navPoint id="navpoint-%s" playOrder="%s"> <navLabel> <text>%s</text> </navLabel> <content src="article_%s.html"/> </navPoint>' % (i+2,i+2,cgi.escape(readable_title),i+1)
 
-        soup = BeautifulSoup(readable_article)
-        #Add xml namespace
-        soup.html["xmlns"] = "http://www.w3.org/1999/xhtml"
+        try:
+            soup = BeautifulSoup(readable_article)
+            #Add xml namespace
+            soup.html["xmlns"] = "http://www.w3.org/1999/xhtml"
+        except:
+            continue
         #Insert header
         body = soup.html.body
         h1 = Tag(soup, "h1", [("class", "title")])
