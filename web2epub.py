@@ -37,10 +37,11 @@ def build_command_line():
     parser.add_option("-a", "--author", dest="author", help="author of the epub")
     parser.add_option("-c", "--cover", dest="cover", help="path to cover image")
     parser.add_option("-o", "--outfile", dest="outfile", help="name of output file")
+    parser.add_argument('-i','--images', help='Include images', action='store_true')
     return parser
 
 
-def web2epub(urls, outfile=None, cover=None, title=None, author=None):
+def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=None):
 
     if(outfile == None):
         outfile = time.strftime('%Y-%m-%d-%S.epub')
@@ -147,9 +148,19 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None):
 
     for i,url in enumerate(urls):
         print "Reading url no. %s of %s --> %s " % (i+1,nos,url)
-        html = urllib.urlopen(url).read()
-        readable_article = Document(html).summary().encode('utf-8')
-        readable_title = Document(html).short_title().encode('utf-8')
+        try:
+            html = urllib.urlopen(url).read()
+        except:
+            continue
+        readable_article = None
+        try: 
+            readable_article = Document(html).summary().encode('utf-8')
+            readable_title = Document(html).short_title().encode('utf-8')
+        except:
+            continue
+        
+        if(readable_article == None):
+            continue
 
         manifest += '<item id="article_%s" href="article_%s.html" media-type="application/xhtml+xml"/>\n' % (i+1,i+1)
         spine += '<itemref idref="article_%s" />\n' % (i+1)
@@ -175,19 +186,20 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None):
         article_title.insert(0, cgi.escape(readable_title))
         head.insert(1, article_title)
 
-        #Download images
-        for j,image in enumerate(soup.findAll("img")):
-            #Convert relative urls to absolute urls
-            imgfullpath = urlparse.urljoin(url, image["src"])
-            #Remove query strings from url
-            imgpath = urlparse.urlunsplit(urlparse.urlsplit(imgfullpath)[:3]+('','',))
-            print "    Downloading image: %s %s" % (j+1, imgpath)
-            imgfile = os.path.basename(imgpath)
-            filename = 'article_%s_image_%s%s' % (i+1,j+1,os.path.splitext(imgfile)[1])
-            if imgpath.lower().startswith("http"):
-                epub.writestr('OEBPS/images/'+filename, urllib.urlopen(imgpath).read())
-                image['src'] = 'images/'+filename
-                manifest += '<item id="article_%s_image_%s" href="images/%s" media-type="%s"/>\n' % (i+1,j+1,filename,mimetypes.guess_type(filename)[0])
+        if(images != None):
+            #Download images
+            for j,image in enumerate(soup.findAll("img")):
+                #Convert relative urls to absolute urls
+                imgfullpath = urlparse.urljoin(url, image["src"])
+                #Remove query strings from url
+                imgpath = urlparse.urlunsplit(urlparse.urlsplit(imgfullpath)[:3]+('','',))
+                print "    Downloading image: %s %s" % (j+1, imgpath)
+                imgfile = os.path.basename(imgpath)
+                filename = 'article_%s_image_%s%s' % (i+1,j+1,os.path.splitext(imgfile)[1])
+                if imgpath.lower().startswith("http"):
+                    epub.writestr('OEBPS/images/'+filename, urllib.urlopen(imgpath).read())
+                    image['src'] = 'images/'+filename
+                    manifest += '<item id="article_%s_image_%s" href="images/%s" media-type="%s"/>\n' % (i+1,j+1,filename,mimetypes.guess_type(filename)[0])
 
         epub.writestr('OEBPS/article_%s.html' % (i+1), str(soup))
 
@@ -204,4 +216,4 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None):
 if __name__ == '__main__':
     parser = build_command_line()
     (options, urls) = parser.parse_args()
-    web2epub(urls, cover=options.cover, outfile=options.outfile, title=options.title, author=options.author)
+    web2epub(urls, cover=options.cover, outfile=options.outfile, title=options.title, author=options.author, images=options.images)
