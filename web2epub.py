@@ -181,7 +181,7 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
             refs = body.findAll('a')
             for x in refs:
                 tag = Tag(soup,'span', [("class", "link-removed")])
-                tag.insert(0,x.renderContents().strip())
+                tag.insert(0,x.text)
                 body.a.replaceWith(tag)
 
         body.insert(0, h1)
