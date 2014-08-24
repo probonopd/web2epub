@@ -10,7 +10,9 @@ web2epub is a command line tool to convert html to epub. Given a set of web page
 * Option to add an image for book cover
 
 ##Usage
-```Usage: web2epub.py [options] url1 url2 ...urln
+
+```
+Usage: web2epub.py [options] url1 url2 ...urln
 
 Options:
   -h, --help            show this help message and exit
@@ -25,6 +27,7 @@ Options:
   -i, --images          Include images
   -f, --footer          Include footer with source URL
   -l, --links           Preserve links in the articles
+
 ```
 
 ##Credits
