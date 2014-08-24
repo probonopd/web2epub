@@ -3,6 +3,7 @@
 
 # web2epub is a command line tool to convert a set of web/html pages to epub.
 # Copyright 2012 Rupesh Kumar
+# Copyright 2014 Simon Peter
 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -19,14 +20,7 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 # MA 02110-1301, USA.
 
-import zipfile
-import urllib
-import sys
-import os.path
-import mimetypes
-import time
-import urlparse
-import cgi
+import zipfile, urllib, sys, os.path, mimetypes, time, urlparse, cgi
 from optparse import OptionParser
 from readability.readability import Document
 from BeautifulSoup import BeautifulSoup,Tag
@@ -37,8 +31,6 @@ class MyZipFile(zipfile.ZipFile):
         zipinfo.compress_type = compress
         zipfile.ZipFile.writestr(self, zipinfo, s)
 
-
-
 def build_command_line():
     parser = OptionParser(usage="Usage: %prog [options] url1 url2 ...urln")
     parser.add_option("-t", "--title", dest="title", help="title of the epub")
@@ -48,21 +40,22 @@ def build_command_line():
     return parser
 
 
-if __name__ == '__main__':
-    parser = build_command_line()
-    (options, args) = parser.parse_args()
-    cover = options.cover
-    nos = len(args)
+def web2epub(urls, outfile=None, cover=None, title=None, author=None):
+
+    if(outfile == None):
+        outfile = time.strftime('%Y-%m-%d-%S.epub')
+
+    nos = len(urls)
     cpath = 'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=='
     ctype = 'image/gif'
     if cover is not None:
         cpath = 'images/cover' + os.path.splitext(os.path.abspath(cover))[1]
         ctype = mimetypes.guess_type(os.path.basename(os.path.abspath(cover)))[0]
 
-    epub = MyZipFile(options.outfile, 'w', zipfile.ZIP_DEFLATED)
+    epub = MyZipFile(outfile, 'w', zipfile.ZIP_DEFLATED)
     #Metadata about the book
-    info = dict(title=options.title,
-            author=options.author,
+    info = dict(title=title,
+            author=author,
             date=time.strftime('%Y-%m-%d'),
             front_cover= cpath,
             front_cover_type = ctype
@@ -152,7 +145,7 @@ if __name__ == '__main__':
     if cover is not None:
         epub.write(os.path.abspath(cover),'OEBPS/images/cover'+os.path.splitext(cover)[1],zipfile.ZIP_DEFLATED)
 
-    for i,url in enumerate(args):
+    for i,url in enumerate(urls):
         print "Reading url no. %s of %s --> %s " % (i+1,nos,url)
         html = urllib.urlopen(url).read()
         readable_article = Document(html).summary().encode('utf-8')
@@ -206,3 +199,9 @@ if __name__ == '__main__':
     epub.writestr('OEBPS/stylesheet.css', stylesheet_tpl)
     epub.writestr('OEBPS/Content.opf', index_tpl % info)
     epub.writestr('OEBPS/toc.ncx', toc_tpl % info)
+    return outfile
+
+if __name__ == '__main__':
+    parser = build_command_line()
+    (options, urls) = parser.parse_args()
+    web2epub(urls, cover=options.cover, outfile=options.outfile, title=options.title, author=options.author)
