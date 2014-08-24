@@ -5,9 +5,12 @@ web2epub is a command line tool to convert html to epub. Given a set of web page
 ##Features
 
 * Simple usage
-* Convert pages into readable format using python-readability [https://github.com/buriy/python-readability] 
-* Create a nice TOC based on web page titles
+* Convert pages into readable format using python-readability
+* Create a table of contents based on web page titles
 * Option to add an image for book cover
+* Option to include the article URL in the footer
+* Option to include the article's images
+* Remove links in the articles
 
 ##Usage
 
