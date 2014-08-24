@@ -1,219 +1,619 @@
-#!python
-# -*- coding: utf-8 -*-
+#!/usr/bin/env python
+import logging
+import re
+import sys
 
-# web2epub is a command line tool to convert a set of web/html pages to epub.
-# Copyright 2012 Rupesh Kumar
-# Copyright 2014 Simon Peter
+from collections import defaultdict
+from lxml.etree import tostring
+from lxml.etree import tounicode
+from lxml.html import document_fromstring
+from lxml.html import fragment_fromstring
 
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU General Public License for more details.
-
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301, USA.
-
-import zipfile, urllib, sys, os.path, mimetypes, time, urlparse, cgi
-from optparse import OptionParser
-from readability.readability import Document
-from BeautifulSoup import BeautifulSoup,Tag
-
-class MyZipFile(zipfile.ZipFile):
-    def writestr(self, name, s, compress=zipfile.ZIP_DEFLATED):
-        zipinfo = zipfile.ZipInfo(name, time.localtime(time.time())[:6])
-        zipinfo.compress_type = compress
-        zipfile.ZipFile.writestr(self, zipinfo, s)
-
-def build_command_line():
-    parser = OptionParser(usage="Usage: %prog [options] url1 url2 ...urln")
-    parser.add_option("-t", "--title", dest="title", help="title of the epub")
-    parser.add_option("-a", "--author", dest="author", help="author of the epub")
-    parser.add_option("-c", "--cover", dest="cover", help="path to cover image")
-    parser.add_option("-o", "--outfile", dest="outfile", help="name of output file")
-    parser.add_argument('-i','--images', help='Include images', action='store_true')
-    return parser
+from cleaners import clean_attributes
+from cleaners import html_cleaner
+from htmls import build_doc
+from htmls import get_body
+from htmls import get_title
+from htmls import shorten_title
 
 
-def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=None):
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger()
 
-    if(outfile == None):
-        outfile = time.strftime('%Y-%m-%d-%S.epub')
 
-    nos = len(urls)
-    cpath = 'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=='
-    ctype = 'image/gif'
-    if cover is not None:
-        cpath = 'images/cover' + os.path.splitext(os.path.abspath(cover))[1]
-        ctype = mimetypes.guess_type(os.path.basename(os.path.abspath(cover)))[0]
+REGEXES = {
+    'unlikelyCandidatesRe': re.compile('combx|comment|community|disqus|extra|foot|header|menu|remark|rss|shoutbox|sidebar|sponsor|ad-break|agegate|pagination|pager|popup|tweet|twitter', re.I),
+    'okMaybeItsACandidateRe': re.compile('and|article|body|column|main|shadow', re.I),
+    'positiveRe': re.compile('article|body|content|entry|hentry|main|page|pagination|post|text|blog|story', re.I),
+    'negativeRe': re.compile('navbar|overbar|subnav_container|js_section|combx|comment|com-|contact|foot|footer|footnote|masthead|media|meta|outbrain|promo|related|scroll|shoutbox|sidebar|sponsor|shopping|tags|tool|widget', re.I),
+    'divToPElementsRe': re.compile('<(a|blockquote|dl|div|img|ol|p|pre|table|ul)', re.I),
+    #'replaceBrsRe': re.compile('(<br[^>]*>[ \n\r\t]*){2,}',re.I),
+    #'replaceFontsRe': re.compile('<(\/?)font[^>]*>',re.I),
+    #'trimRe': re.compile('^\s+|\s+$/'),
+    #'normalizeRe': re.compile('\s{2,}/'),
+    #'killBreaksRe': re.compile('(<br\s*\/?>(\s|&nbsp;?)*){1,}/'),
+    #'videoRe': re.compile('http:\/\/(www\.)?(youtube|vimeo)\.com', re.I),
+    #skipFootnoteLink:      /^\s*(\[?[a-z0-9]{1,2}\]?|^|edit|citation needed)\s*$/i,
+}
 
-    epub = MyZipFile(outfile, 'w', zipfile.ZIP_DEFLATED)
-    #Metadata about the book
-    info = dict(title=title,
-            author=author,
-            date=time.strftime('%Y-%m-%d'),
-            front_cover= cpath,
-            front_cover_type = ctype
-            )
 
-    # The first file must be named "mimetype"
-    epub.writestr("mimetype", "application/epub+zip", zipfile.ZIP_STORED)
-    # We need an index file, that lists all other HTML files
-    # This index file itself is referenced in the META_INF/container.xml file
-    epub.writestr("META-INF/container.xml", '''<container version="1.0"
-        xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
-        <rootfiles>
-            <rootfile full-path="OEBPS/Content.opf" media-type="application/oebps-package+xml"/>
-        </rootfiles>
-        </container>''')
+class Unparseable(ValueError):
+    pass
 
-    # The index file is another XML file, living per convention
-    # in OEBPS/content.opf
-    index_tpl = '''<package version="2.0"
-        xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid">
-        <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-        <dc:title>%(title)s</dc:title>
-        <dc:creator>%(author)s</dc:creator>
-        <dc:date>%(date)s</dc:date>
-        <meta name="cover" content="cover-image" />
-        </metadata>
-        <manifest>
-          <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
-          <item id="cover" href="cover.html" media-type="application/xhtml+xml"/>
-          <item id="cover-image" href="%(front_cover)s" media-type="%(front_cover_type)s"/>
-          <item id="css" href="stylesheet.css" media-type="text/css"/>
-            %(manifest)s
-        </manifest>
-        <spine toc="ncx">
-            <itemref idref="cover" linear="no"/>
-            %(spine)s
-        </spine>
-        <guide>
-            <reference href="cover.html" type="cover" title="Cover"/>
-        </guide>
-        </package>'''
 
-    toc_tpl = '''<?xml version='1.0' encoding='utf-8'?>
-        <!DOCTYPE ncx PUBLIC "-//NISO//DTD ncx 2005-1//EN"
-                 "http://www.daisy.org/z3986/2005/ncx-2005-1.dtd">
-        <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
-        <head>
-        <meta name="dtb:depth" content="1"/>
-        <meta name="dtb:totalPageCount" content="0"/>
-        <meta name="dtb:maxPageNumber" content="0"/>
-      </head>
-      <docTitle>
-        <text>%(title)s</text>
-      </docTitle>
-      <navMap>
-        <navPoint id="navpoint-1" playOrder="1"> <navLabel> <text>Cover</text> </navLabel> <content src="cover.html"/> </navPoint>
-        %(toc)s
-      </navMap>
-    </ncx>'''
+def describe(node, depth=1):
+    if not hasattr(node, 'tag'):
+        return "[%s]" % type(node)
+    name = node.tag
+    if node.get('id', ''):
+        name += '#' + node.get('id')
+    if node.get('class', ''):
+        name += '.' + node.get('class').replace(' ', '.')
+    if name[:4] in ['div#', 'div.']:
+        name = name[3:]
+    if depth and node.getparent() is not None:
+        return name + ' - ' + describe(node.getparent(), depth - 1)
+    return name
 
-    cover_tpl = '''<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
-        <html xmlns="http://www.w3.org/1999/xhtml">
-        <head>
-        <title>Cover</title>
-        <style type="text/css"> img { max-width: 100%%; } </style>
-        </head>
-        <body>
-        <h1>%(title)s</h1>
-        <div id="cover-image">
-        <img src="%(front_cover)s" alt="Cover image"/>
-        </div>
-        </body>
-        </html>'''
 
-    stylesheet_tpl = '''
-        p, body {
-            orphans: 2;
-            widows: 2;
-        }
-    '''
+def to_int(x):
+    if not x:
+        return None
+    x = x.strip()
+    if x.endswith('px'):
+        return int(x[:-2])
+    if x.endswith('em'):
+        return int(x[:-2]) * 12
+    return int(x)
 
-    manifest = ""
-    spine = ""
-    toc = ""
 
-    epub.writestr('OEBPS/cover.html', cover_tpl % info)
-    if cover is not None:
-        epub.write(os.path.abspath(cover),'OEBPS/images/cover'+os.path.splitext(cover)[1],zipfile.ZIP_DEFLATED)
+def clean(text):
+    text = re.sub('\s*\n\s*', '\n', text)
+    text = re.sub('[ \t]{2,}', ' ', text)
+    return text.strip()
 
-    for i,url in enumerate(urls):
-        print "Reading url no. %s of %s --> %s " % (i+1,nos,url)
+
+def text_length(i):
+    return len(clean(i.text_content() or ""))
+
+regexp_type = type(re.compile('hello, world'))
+
+def compile_pattern(elements):
+    if not elements:
+        return None
+    if isinstance(elements, regexp_type):
+        return elements
+    if isinstance(elements, basestring):
+        elements = elements.split(',')
+    return re.compile(u'|'.join([re.escape(x.lower()) for x in elements]), re.U)
+
+class Document:
+    """Class to build a etree document out of html."""
+    TEXT_LENGTH_THRESHOLD = 25
+    RETRY_LENGTH = 250
+
+    def __init__(self, input, positive_keywords=None, negative_keywords=None, **options):
+        """Generate the document
+
+        :param input: string of the html content.
+
+        kwargs:
+            - attributes:
+            - debug: output debug messages
+            - min_text_length:
+            - retry_length:
+            - url: will allow adjusting links to be absolute
+            - positive_keywords: the list of positive search patterns in classes and ids, for example: ["news-item", "block"]
+            - negative_keywords: the list of negative search patterns in classes and ids, for example: ["mysidebar", "related", "ads"]
+            Also positive_keywords and negative_keywords could be a regexp.
+        """
+        self.input = input
+        self.options = options
+        self.html = None
+        self.encoding = None
+        self.positive_keywords = compile_pattern(positive_keywords)
+        self.negative_keywords = compile_pattern(negative_keywords)
+
+    def _html(self, force=False):
+        if force or self.html is None:
+            self.html = self._parse(self.input)
+        return self.html
+
+    def _parse(self, input):
+        doc, self.encoding = build_doc(input)
+        doc = html_cleaner.clean_html(doc)
+        base_href = self.options.get('url', None)
+        if base_href:
+            doc.make_links_absolute(base_href, resolve_base_href=True)
+        else:
+            doc.resolve_base_href()
+        return doc
+
+    def content(self):
+        return get_body(self._html(True))
+
+    def title(self):
+        return get_title(self._html(True))
+
+    def short_title(self):
+        return shorten_title(self._html(True))
+
+    def get_clean_html(self):
+         return clean_attributes(tounicode(self.html))
+
+    def summary(self, html_partial=False):
+        """Generate the summary of the html docuemnt
+
+        :param html_partial: return only the div of the document, don't wrap
+        in html and body tags.
+
+        """
         try:
-            html = urllib.urlopen(url).read()
-        except:
-            continue
-        readable_article = None
-        try: 
-            readable_article = Document(html).summary().encode('utf-8')
-            readable_title = Document(html).short_title().encode('utf-8')
-        except:
-            continue
-        
-        if(readable_article == None):
-            continue
+            ruthless = True
+            while True:
+                self._html(True)
+                for i in self.tags(self.html, 'script', 'style'):
+                    i.drop_tree()
+                for i in self.tags(self.html, 'body'):
+                    i.set('id', 'readabilityBody')
+                if ruthless:
+                    self.remove_unlikely_candidates()
+                self.transform_misused_divs_into_paragraphs()
+                candidates = self.score_paragraphs()
 
-        manifest += '<item id="article_%s" href="article_%s.html" media-type="application/xhtml+xml"/>\n' % (i+1,i+1)
-        spine += '<itemref idref="article_%s" />\n' % (i+1)
-        toc += '<navPoint id="navpoint-%s" playOrder="%s"> <navLabel> <text>%s</text> </navLabel> <content src="article_%s.html"/> </navPoint>' % (i+2,i+2,cgi.escape(readable_title),i+1)
+                best_candidate = self.select_best_candidate(candidates)
 
-        soup = BeautifulSoup(readable_article)
-        #Add xml namespace
-        soup.html["xmlns"] = "http://www.w3.org/1999/xhtml"
-        #Insert header
-        body = soup.html.body
-        h1 = Tag(soup, "h1", [("class", "title")])
-        h1.insert(0, cgi.escape(readable_title))
-        body.insert(0, h1)
+                if best_candidate:
+                    article = self.get_article(candidates, best_candidate,
+                            html_partial=html_partial)
+                else:
+                    if ruthless:
+                        log.debug("ruthless removal did not work. ")
+                        ruthless = False
+                        self.debug(
+                            ("ended up stripping too much - "
+                             "going for a safer _parse"))
+                        # try again
+                        continue
+                    else:
+                        log.debug(
+                            ("Ruthless and lenient parsing did not work. "
+                             "Returning raw html"))
+                        article = self.html.find('body')
+                        if article is None:
+                            article = self.html
+                cleaned_article = self.sanitize(article, candidates)
+                article_length = len(cleaned_article or '')
+                retry_length = self.options.get(
+                    'retry_length',
+                    self.RETRY_LENGTH)
+                of_acceptable_length = article_length >= retry_length
+                if ruthless and not of_acceptable_length:
+                    ruthless = False
+                    # Loop through and try again.
+                    continue
+                else:
+                    return cleaned_article
+        except StandardError, e:
+            log.exception('error getting summary: ')
+            raise Unparseable(str(e)), None, sys.exc_info()[2]
 
-        #Add stylesheet path
-        head = soup.find('head')
-        if head is None:
-            head = Tag(soup,"head")
-            soup.html.insert(0, head)
-        link = Tag(soup, "link", [("type","text/css"),("rel","stylesheet"),("href","stylesheet.css")])
-        head.insert(0, link)
-        article_title = Tag(soup, "title")
-        article_title.insert(0, cgi.escape(readable_title))
-        head.insert(1, article_title)
+    def get_article(self, candidates, best_candidate, html_partial=False):
+        # Now that we have the top candidate, look through its siblings for
+        # content that might also be related.
+        # Things like preambles, content split by ads that we removed, etc.
+        sibling_score_threshold = max([
+            10,
+            best_candidate['content_score'] * 0.2])
+        # create a new html document with a html->body->div
+        if html_partial:
+            output = fragment_fromstring('<div/>')
+        else:
+            output = document_fromstring('<div/>')
+        best_elem = best_candidate['elem']
+        for sibling in best_elem.getparent().getchildren():
+            # in lxml there no concept of simple text
+            # if isinstance(sibling, NavigableString): continue
+            append = False
+            if sibling is best_elem:
+                append = True
+            sibling_key = sibling  # HashableElement(sibling)
+            if sibling_key in candidates and \
+                candidates[sibling_key]['content_score'] >= sibling_score_threshold:
+                append = True
 
-        if(images != None):
-            #Download images
-            for j,image in enumerate(soup.findAll("img")):
-                #Convert relative urls to absolute urls
-                imgfullpath = urlparse.urljoin(url, image["src"])
-                #Remove query strings from url
-                imgpath = urlparse.urlunsplit(urlparse.urlsplit(imgfullpath)[:3]+('','',))
-                print "    Downloading image: %s %s" % (j+1, imgpath)
-                imgfile = os.path.basename(imgpath)
-                filename = 'article_%s_image_%s%s' % (i+1,j+1,os.path.splitext(imgfile)[1])
-                if imgpath.lower().startswith("http"):
-                    epub.writestr('OEBPS/images/'+filename, urllib.urlopen(imgpath).read())
-                    image['src'] = 'images/'+filename
-                    manifest += '<item id="article_%s_image_%s" href="images/%s" media-type="%s"/>\n' % (i+1,j+1,filename,mimetypes.guess_type(filename)[0])
+            if sibling.tag == "p":
+                link_density = self.get_link_density(sibling)
+                node_content = sibling.text or ""
+                node_length = len(node_content)
 
-        epub.writestr('OEBPS/article_%s.html' % (i+1), str(soup))
+                if node_length > 80 and link_density < 0.25:
+                    append = True
+                elif node_length <= 80 \
+                    and link_density == 0 \
+                    and re.search('\.( |$)', node_content):
+                    append = True
 
-    info['manifest'] = manifest
-    info['spine'] = spine
-    info['toc']= toc
+            if append:
+                # We don't want to append directly to output, but the div
+                # in html->body->div
+                if html_partial:
+                    output.append(sibling)
+                else:
+                    output.getchildren()[0].getchildren()[0].append(sibling)
+        #if output is not None:
+        #    output.append(best_elem)
+        return output
 
-    # Finally, write the index and toc
-    epub.writestr('OEBPS/stylesheet.css', stylesheet_tpl)
-    epub.writestr('OEBPS/Content.opf', index_tpl % info)
-    epub.writestr('OEBPS/toc.ncx', toc_tpl % info)
-    return outfile
+    def select_best_candidate(self, candidates):
+        sorted_candidates = sorted(candidates.values(), key=lambda x: x['content_score'], reverse=True)
+        for candidate in sorted_candidates[:5]:
+            elem = candidate['elem']
+            self.debug("Top 5 : %6.3f %s" % (
+                candidate['content_score'],
+                describe(elem)))
+
+        if len(sorted_candidates) == 0:
+            return None
+
+        best_candidate = sorted_candidates[0]
+        return best_candidate
+
+    def get_link_density(self, elem):
+        link_length = 0
+        for i in elem.findall(".//a"):
+            link_length += text_length(i)
+        #if len(elem.findall(".//div") or elem.findall(".//p")):
+        #    link_length = link_length
+        total_length = text_length(elem)
+        return float(link_length) / max(total_length, 1)
+
+    def score_paragraphs(self, ):
+        MIN_LEN = self.options.get(
+            'min_text_length',
+            self.TEXT_LENGTH_THRESHOLD)
+        candidates = {}
+        ordered = []
+        for elem in self.tags(self._html(), "p", "pre", "td"):
+            parent_node = elem.getparent()
+            if parent_node is None:
+                continue
+            grand_parent_node = parent_node.getparent()
+
+            inner_text = clean(elem.text_content() or "")
+            inner_text_len = len(inner_text)
+
+            # If this paragraph is less than 25 characters
+            # don't even count it.
+            if inner_text_len < MIN_LEN:
+                continue
+
+            if parent_node not in candidates:
+                candidates[parent_node] = self.score_node(parent_node)
+                ordered.append(parent_node)
+
+            if grand_parent_node is not None and grand_parent_node not in candidates:
+                candidates[grand_parent_node] = self.score_node(
+                    grand_parent_node)
+                ordered.append(grand_parent_node)
+
+            content_score = 1
+            content_score += len(inner_text.split(','))
+            content_score += min((inner_text_len / 100), 3)
+            #if elem not in candidates:
+            #    candidates[elem] = self.score_node(elem)
+
+            #WTF? candidates[elem]['content_score'] += content_score
+            candidates[parent_node]['content_score'] += content_score
+            if grand_parent_node is not None:
+                candidates[grand_parent_node]['content_score'] += content_score / 2.0
+
+        # Scale the final candidates score based on link density. Good content
+        # should have a relatively small link density (5% or less) and be
+        # mostly unaffected by this operation.
+        for elem in ordered:
+            candidate = candidates[elem]
+            ld = self.get_link_density(elem)
+            score = candidate['content_score']
+            self.debug("Candid: %6.3f %s link density %.3f -> %6.3f" % (
+                score,
+                describe(elem),
+                ld,
+                score * (1 - ld)))
+            candidate['content_score'] *= (1 - ld)
+
+        return candidates
+
+    def class_weight(self, e):
+        weight = 0
+        for feature in [e.get('class', None), e.get('id', None)]:
+            if feature:
+                if REGEXES['negativeRe'].search(feature):
+                    weight -= 25
+
+                if REGEXES['positiveRe'].search(feature):
+                    weight += 25
+
+                if self.positive_keywords and self.positive_keywords.search(feature):
+                    weight += 25
+
+                if self.negative_keywords and self.negative_keywords.search(feature):
+                    weight -= 25
+
+        if self.positive_keywords and self.positive_keywords.match('tag-'+e.tag):
+            weight += 25
+
+        if self.negative_keywords and self.negative_keywords.match('tag-'+e.tag):
+            weight -= 25
+
+        return weight
+
+    def score_node(self, elem):
+        content_score = self.class_weight(elem)
+        name = elem.tag.lower()
+        if name == "div":
+            content_score += 5
+        elif name in ["pre", "td", "blockquote"]:
+            content_score += 3
+        elif name in ["address", "ol", "ul", "dl", "dd", "dt", "li", "form"]:
+            content_score -= 3
+        elif name in ["h1", "h2", "h3", "h4", "h5", "h6", "th"]:
+            content_score -= 5
+        return {
+            'content_score': content_score,
+            'elem': elem
+        }
+
+    def debug(self, *a):
+        if self.options.get('debug', False):
+            log.debug(*a)
+
+    def remove_unlikely_candidates(self):
+        for elem in self.html.iter():
+            s = "%s %s" % (elem.get('class', ''), elem.get('id', ''))
+            if len(s) < 2:
+                continue
+            #self.debug(s)
+            if REGEXES['unlikelyCandidatesRe'].search(s) and (not REGEXES['okMaybeItsACandidateRe'].search(s)) and elem.tag not in ['html', 'body']:
+                self.debug("Removing unlikely candidate - %s" % describe(elem))
+                elem.drop_tree()
+
+    def transform_misused_divs_into_paragraphs(self):
+        for elem in self.tags(self.html, 'div'):
+            # transform <div>s that do not contain other block elements into
+            # <p>s
+            #FIXME: The current implementation ignores all descendants that
+            # are not direct children of elem
+            # This results in incorrect results in case there is an <img>
+            # buried within an <a> for example
+            if not REGEXES['divToPElementsRe'].search(
+                    unicode(''.join(map(tostring, list(elem))))):
+                #self.debug("Altering %s to p" % (describe(elem)))
+                elem.tag = "p"
+                #print "Fixed element "+describe(elem)
+
+        for elem in self.tags(self.html, 'div'):
+            if elem.text and elem.text.strip():
+                p = fragment_fromstring('<p/>')
+                p.text = elem.text
+                elem.text = None
+                elem.insert(0, p)
+                #print "Appended "+tounicode(p)+" to "+describe(elem)
+
+            for pos, child in reversed(list(enumerate(elem))):
+                if child.tail and child.tail.strip():
+                    p = fragment_fromstring('<p/>')
+                    p.text = child.tail
+                    child.tail = None
+                    elem.insert(pos + 1, p)
+                    #print "Inserted "+tounicode(p)+" to "+describe(elem)
+                if child.tag == 'br':
+                    #print 'Dropped <br> at '+describe(elem)
+                    child.drop_tree()
+
+    def tags(self, node, *tag_names):
+        for tag_name in tag_names:
+            for e in node.findall('.//%s' % tag_name):
+                yield e
+
+    def reverse_tags(self, node, *tag_names):
+        for tag_name in tag_names:
+            for e in reversed(node.findall('.//%s' % tag_name)):
+                yield e
+
+    def sanitize(self, node, candidates):
+        MIN_LEN = self.options.get('min_text_length',
+            self.TEXT_LENGTH_THRESHOLD)
+        for header in self.tags(node, "h1", "h2", "h3", "h4", "h5", "h6"):
+            if self.class_weight(header) < 0 or self.get_link_density(header) > 0.33:
+                header.drop_tree()
+
+        for elem in self.tags(node, "form", "iframe", "textarea"):
+            elem.drop_tree()
+        allowed = {}
+        # Conditionally clean <table>s, <ul>s, and <div>s
+        for el in self.reverse_tags(node, "table", "ul", "div"):
+            if el in allowed:
+                continue
+            weight = self.class_weight(el)
+            if el in candidates:
+                content_score = candidates[el]['content_score']
+                #print '!',el, '-> %6.3f' % content_score
+            else:
+                content_score = 0
+            tag = el.tag
+
+            if weight + content_score < 0:
+                self.debug("Cleaned %s with score %6.3f and weight %-3s" %
+                    (describe(el), content_score, weight, ))
+                el.drop_tree()
+            elif el.text_content().count(",") < 10:
+                counts = {}
+                for kind in ['p', 'img', 'li', 'a', 'embed', 'input']:
+                    counts[kind] = len(el.findall('.//%s' % kind))
+                counts["li"] -= 100
+
+                # Count the text length excluding any surrounding whitespace
+                content_length = text_length(el)
+                link_density = self.get_link_density(el)
+                parent_node = el.getparent()
+                if parent_node is not None:
+                    if parent_node in candidates:
+                        content_score = candidates[parent_node]['content_score']
+                    else:
+                        content_score = 0
+                #if parent_node is not None:
+                    #pweight = self.class_weight(parent_node) + content_score
+                    #pname = describe(parent_node)
+                #else:
+                    #pweight = 0
+                    #pname = "no parent"
+                to_remove = False
+                reason = ""
+
+                #if el.tag == 'div' and counts["img"] >= 1:
+                #    continue
+                if counts["p"] and counts["img"] > counts["p"]:
+                    reason = "too many images (%s)" % counts["img"]
+                    to_remove = True
+                elif counts["li"] > counts["p"] and tag != "ul" and tag != "ol":
+                    reason = "more <li>s than <p>s"
+                    to_remove = True
+                elif counts["input"] > (counts["p"] / 3):
+                    reason = "less than 3x <p>s than <input>s"
+                    to_remove = True
+                elif content_length < (MIN_LEN) and (counts["img"] == 0 or counts["img"] > 2):
+                    reason = "too short content length %s without a single image" % content_length
+                    to_remove = True
+                elif weight < 25 and link_density > 0.2:
+                        reason = "too many links %.3f for its weight %s" % (
+                            link_density, weight)
+                        to_remove = True
+                elif weight >= 25 and link_density > 0.5:
+                    reason = "too many links %.3f for its weight %s" % (
+                        link_density, weight)
+                    to_remove = True
+                elif (counts["embed"] == 1 and content_length < 75) or counts["embed"] > 1:
+                    reason = "<embed>s with too short content length, or too many <embed>s"
+                    to_remove = True
+#                if el.tag == 'div' and counts['img'] >= 1 and to_remove:
+#                    imgs = el.findall('.//img')
+#                    valid_img = False
+#                    self.debug(tounicode(el))
+#                    for img in imgs:
+#
+#                        height = img.get('height')
+#                        text_length = img.get('text_length')
+#                        self.debug ("height %s text_length %s" %(repr(height), repr(text_length)))
+#                        if to_int(height) >= 100 or to_int(text_length) >= 100:
+#                            valid_img = True
+#                            self.debug("valid image" + tounicode(img))
+#                            break
+#                    if valid_img:
+#                        to_remove = False
+#                        self.debug("Allowing %s" %el.text_content())
+#                        for desnode in self.tags(el, "table", "ul", "div"):
+#                            allowed[desnode] = True
+
+                    #find x non empty preceding and succeeding siblings
+                    i, j = 0, 0
+                    x = 1
+                    siblings = []
+                    for sib in el.itersiblings():
+                        #self.debug(sib.text_content())
+                        sib_content_length = text_length(sib)
+                        if sib_content_length:
+                            i =+ 1
+                            siblings.append(sib_content_length)
+                            if i == x:
+                                break
+                    for sib in el.itersiblings(preceding=True):
+                        #self.debug(sib.text_content())
+                        sib_content_length = text_length(sib)
+                        if sib_content_length:
+                            j =+ 1
+                            siblings.append(sib_content_length)
+                            if j == x:
+                                break
+                    #self.debug(str(siblings))
+                    if siblings and sum(siblings) > 1000:
+                        to_remove = False
+                        self.debug("Allowing %s" % describe(el))
+                        for desnode in self.tags(el, "table", "ul", "div"):
+                            allowed[desnode] = True
+
+                if to_remove:
+                    self.debug("Cleaned %6.3f %s with weight %s cause it has %s." %
+                        (content_score, describe(el), weight, reason))
+                    #print tounicode(el)
+                    #self.debug("pname %s pweight %.3f" %(pname, pweight))
+                    el.drop_tree()
+
+        for el in ([node] + [n for n in node.iter()]):
+            if not self.options.get('attributes', None):
+                #el.attrib = {} #FIXME:Checkout the effects of disabling this
+                pass
+
+        self.html = node
+        return self.get_clean_html()
+
+
+class HashableElement():
+    def __init__(self, node):
+        self.node = node
+        self._path = None
+
+    def _get_path(self):
+        if self._path is None:
+            reverse_path = []
+            node = self.node
+            while node is not None:
+                node_id = (node.tag, tuple(node.attrib.items()), node.text)
+                reverse_path.append(node_id)
+                node = node.getparent()
+            self._path = tuple(reverse_path)
+        return self._path
+    path = property(_get_path)
+
+    def __hash__(self):
+        return hash(self.path)
+
+    def __eq__(self, other):
+        return self.path == other.path
+
+    def __getattr__(self, tag):
+        return getattr(self.node, tag)
+
+
+def main():
+    from optparse import OptionParser
+    parser = OptionParser(usage="%prog: [options] [file]")
+    parser.add_option('-v', '--verbose', action='store_true')
+    parser.add_option('-u', '--url', default=None, help="use URL instead of a local file")
+    parser.add_option('-p', '--positive-keywords', default=None, help="positive keywords (separated with comma)", action='store')
+    parser.add_option('-n', '--negative-keywords', default=None, help="negative keywords (separated with comma)", action='store')
+    (options, args) = parser.parse_args()
+
+    if not (len(args) == 1 or options.url):
+        parser.print_help()
+        sys.exit(1)
+
+    file = None
+    if options.url:
+        import urllib
+        file = urllib.urlopen(options.url)
+    else:
+        file = open(args[0], 'rt')
+    enc = sys.__stdout__.encoding or 'utf-8' # XXX: this hack could not always work, better to set PYTHONIOENCODING
+    try:
+        print Document(file.read(),
+            debug=options.verbose,
+            url=options.url,
+            positive_keywords = options.positive_keywords,
+            negative_keywords = options.negative_keywords,
+        ).summary().encode(enc, 'replace')
+    finally:
+        file.close()
 
 if __name__ == '__main__':
-    parser = build_command_line()
-    (options, urls) = parser.parse_args()
-    web2epub(urls, cover=options.cover, outfile=options.outfile, title=options.title, author=options.author, images=options.images)
+    main()
