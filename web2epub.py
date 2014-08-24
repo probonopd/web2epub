@@ -38,10 +38,11 @@ def build_command_line():
     parser.add_option("-c", "--cover", dest="cover", help="path to cover image")
     parser.add_option("-o", "--outfile", dest="outfile", help="name of output file")
     parser.add_option('-i','--images', help='Include images', action='store_true')
+    parser.add_option('-f','--footer', help='Include footer with source URL', action='store_true')
     return parser
 
 
-def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=None):
+def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=None, footer=None):
 
     if(outfile == None):
         outfile = time.strftime('%Y-%m-%d-%S.epub')
@@ -203,6 +204,11 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
                     image['src'] = 'images/'+filename
                     manifest += '<item id="article_%s_image_%s" href="images/%s" media-type="%s"/>\n' % (i+1,j+1,filename,mimetypes.guess_type(filename)[0])
 
+        if(footer != None):
+            p =  Tag(soup, "p", [("class", "source-url")])
+            p.insert(0, url)
+            body.append(p)
+
         epub.writestr('OEBPS/article_%s.html' % (i+1), str(soup))
 
     info['manifest'] = manifest
@@ -218,4 +224,4 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
 if __name__ == '__main__':
     parser = build_command_line()
     (options, urls) = parser.parse_args()
-    web2epub(urls, cover=options.cover, outfile=options.outfile, title=options.title, author=options.author, images=options.images)
+    web2epub(urls, cover=options.cover, outfile=options.outfile, title=options.title, author=options.author, images=options.images, footer=options.footer)
