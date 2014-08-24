@@ -39,10 +39,10 @@ def build_command_line():
     parser.add_option("-o", "--outfile", dest="outfile", help="name of output file")
     parser.add_option('-i','--images', help='Include images', action='store_true')
     parser.add_option('-f','--footer', help='Include footer with source URL', action='store_true')
+    parser.add_option('-l','--links', help='Preserve links in the articles', action='store_true')
     return parser
 
-
-def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=None, footer=None):
+def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=None, footer=None, links=None):
 
     if(outfile == None):
         outfile = time.strftime('%Y-%m-%d-%S.epub')
@@ -176,6 +176,14 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
         body = soup.html.body
         h1 = Tag(soup, "h1", [("class", "title")])
         h1.insert(0, cgi.escape(readable_title))
+
+        if(links == None):
+            refs = body.findAll('a')
+            for x in refs:
+                tag = Tag(soup,'span', [("class", "link-removed")])
+                tag.insert(0,x.renderContents().strip())
+                body.a.replaceWith(tag)
+
         body.insert(0, h1)
 
         #Add stylesheet path
@@ -224,4 +232,4 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
 if __name__ == '__main__':
     parser = build_command_line()
     (options, urls) = parser.parse_args()
-    web2epub(urls, cover=options.cover, outfile=options.outfile, title=options.title, author=options.author, images=options.images, footer=options.footer)
+    web2epub(urls, cover=options.cover, outfile=options.outfile, title=options.title, author=options.author, images=options.images, footer=options.footer, links=options.links)
