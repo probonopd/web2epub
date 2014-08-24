@@ -37,7 +37,7 @@ def build_command_line():
     parser.add_option("-a", "--author", dest="author", help="author of the epub")
     parser.add_option("-c", "--cover", dest="cover", help="path to cover image")
     parser.add_option("-o", "--outfile", dest="outfile", help="name of output file")
-    parser.add_argument('-i','--images', help='Include images', action='store_true')
+    parser.add_option('-i','--images', help='Include images', action='store_true')
     return parser
 
 
@@ -153,9 +153,11 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
         except:
             continue
         readable_article = None
-        try: 
-            readable_article = Document(html).summary().encode('utf-8')
-            readable_title = Document(html).short_title().encode('utf-8')
+        try:
+            document = Document(html)
+            document.TEXT_LENGTH_THRESHOLD = 200 # Gives better results than default
+            readable_article = document.summary().encode('utf-8')
+            readable_title = document.short_title().encode('utf-8')
         except:
             continue
         
