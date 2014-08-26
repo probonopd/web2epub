@@ -22,7 +22,9 @@
 
 import zipfile, urllib, sys, os.path, mimetypes, time, urlparse, cgi
 from optparse import OptionParser
-from readability.readability import Document
+#from readability.readability import Document
+import readability
+import cssselect # readability needs it; importing here so that we see if it is not present
 from BeautifulSoup import BeautifulSoup,Tag
 
 class MyZipFile(zipfile.ZipFile):
@@ -55,13 +57,6 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
         ctype = mimetypes.guess_type(os.path.basename(os.path.abspath(cover)))[0]
 
     epub = MyZipFile(outfile, 'w', zipfile.ZIP_DEFLATED)
-    #Metadata about the book
-    info = dict(title=title,
-            author=author,
-            date=time.strftime('%Y-%m-%d'),
-            front_cover= cpath,
-            front_cover_type = ctype
-            )
 
     # The first file must be named "mimetype"
     epub.writestr("mimetype", "application/epub+zip", zipfile.ZIP_STORED)
@@ -125,9 +120,11 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
         <style type="text/css"> img { max-width: 100%%; } </style>
         </head>
         <body>
+        <div class="centerpage">
         <h1>%(title)s</h1>
         <div id="cover-image">
         <img src="%(front_cover)s" alt="Cover image"/>
+        </div>
         </div>
         </body>
         </html>'''
@@ -137,30 +134,36 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
             orphans: 2;
             widows: 2;
         }
+
+        .pagecenter{
+            width:100%;
+            height:100%;
+            position:absolute;
+            left:50%;
+            top:50%;
+            margin:-100px 0 0 -150px;
+        }
     '''
 
     manifest = ""
     spine = ""
     toc = ""
 
-    epub.writestr('OEBPS/cover.html', cover_tpl % info)
-    if cover is not None:
-        epub.write(os.path.abspath(cover),'OEBPS/images/cover'+os.path.splitext(cover)[1],zipfile.ZIP_DEFLATED)
-
     for i,url in enumerate(urls):
         print "Reading url no. %s of %s --> %s " % (i+1,nos,url)
-        try:
-            html = urllib.urlopen(url).read()
-        except:
-            continue
+        ##try:
+        html = urllib.urlopen(url).read()
+
+        ##except:
+            ##continue
         readable_article = None
-        try:
-            document = Document(html)
-            document.TEXT_LENGTH_THRESHOLD = 200 # Gives better results than default
-            readable_article = document.summary().encode('utf-8')
-            readable_title = document.short_title().encode('utf-8')
-        except:
-            continue
+        ##try:
+        document = readability.Document(html)
+        document.TEXT_LENGTH_THRESHOLD = 200 # Gives better results than default
+        readable_article = document.summary().encode('utf-8')
+        readable_title = document.short_title().encode('utf-8')
+        ##except:
+            ##continue
         
         if(readable_article == None):
             continue
@@ -183,9 +186,12 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
         if(links == None):
             refs = body.findAll('a')
             for x in refs:
-                tag = Tag(soup,'span', [("class", "link-removed")])
-                tag.insert(0,x.text)
-                body.a.replaceWith(tag)
+                try:
+                    tag = Tag(soup,'span', [("class", "link-removed")])
+                    tag.insert(0,x.text)
+                    body.a.replaceWith(tag)
+                except:
+                    pass
 
         body.insert(0, h1)
 
@@ -199,6 +205,15 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
         article_title = Tag(soup, "title")
         article_title.insert(0, cgi.escape(readable_title))
         head.insert(1, article_title)
+
+        # If we do not have a title for the book, then use the date
+        if(title == None):
+            title = str(time.strftime('%Y-%m-%d'))
+            # title = readable_title
+
+        # If we do not have an author for the book, then use the URL hostname of the first article
+        if(author == None):
+            author = str(urlparse.urlparse(url).hostname.replace("www.","")) or ''
 
         if(images != None):
             #Download images
@@ -221,6 +236,18 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
             body.append(p)
 
         epub.writestr('OEBPS/article_%s.html' % (i+1), str(soup))
+
+    #Metadata about the book
+    info = dict(title=title.encode('utf-8'),
+            author=author,
+            date=time.strftime('%Y-%m-%d'),
+            front_cover= cpath,
+            front_cover_type = ctype
+            )
+
+    epub.writestr('OEBPS/cover.html', cover_tpl % info)
+    if cover is not None:
+        epub.write(os.path.abspath(cover),'OEBPS/images/cover'+os.path.splitext(cover)[1],zipfile.ZIP_DEFLATED)
 
     info['manifest'] = manifest
     info['spine'] = spine
