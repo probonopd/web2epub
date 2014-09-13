@@ -20,7 +20,7 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 # MA 02110-1301, USA.
 
-import zipfile, urllib, sys, os.path, mimetypes, time, urlparse, cgi
+import zipfile, urllib, sys, os.path, mimetypes, time, urlparse
 from optparse import OptionParser
 #from readability.readability import Document
 import readability
