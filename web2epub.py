@@ -20,7 +20,7 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 # MA 02110-1301, USA.
 
-import zipfile, urllib, sys, os.path, mimetypes, time, urlparse
+import zipfile, urllib, sys, os.path, mimetypes, time, urlparse, cgi
 from optparse import OptionParser
 #from readability.readability import Document
 import readability
@@ -178,7 +178,7 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
 
         manifest += '<item id="article_%s" href="article_%s.html" media-type="application/xhtml+xml"/>\n' % (i+1,i+1)
         spine += '<itemref idref="article_%s" />\n' % (i+1)
-        toc += '<navPoint id="navpoint-%s" playOrder="%s"> <navLabel> <text>%s</text> </navLabel> <content src="article_%s.html"/> </navPoint>' % (i+2,i+2,repr(readable_title),i+1)
+        toc += '<navPoint id="navpoint-%s" playOrder="%s"> <navLabel> <text>%s</text> </navLabel> <content src="article_%s.html"/> </navPoint>' % (i+2,i+2,readable_title.encode('ascii', 'xmlcharrefreplace'),i+1)
 
         try:
             soup = BeautifulSoup(readable_article)
