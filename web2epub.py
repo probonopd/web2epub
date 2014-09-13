@@ -20,18 +20,25 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 # MA 02110-1301, USA.
 
-import zipfile, urllib, sys, os.path, mimetypes, time, urlparse, cgi
+import zipfile, urllib, sys, os.path, mimetypes, time, urlparse
 from optparse import OptionParser
 #from readability.readability import Document
 import readability
 import cssselect # readability needs it; importing here so that we see if it is not present
 from BeautifulSoup import BeautifulSoup,Tag
 
+from xml.sax.saxutils import escape
+
 class MyZipFile(zipfile.ZipFile):
     def writestr(self, name, s, compress=zipfile.ZIP_DEFLATED):
         zipinfo = zipfile.ZipInfo(name, time.localtime(time.time())[:6])
         zipinfo.compress_type = compress
         zipfile.ZipFile.writestr(self, zipinfo, s)
+
+def ascii_chars(string):
+    """Returns ASCII characters only and skipps all others.
+    """
+    return ''.join(char for char in string if ord(char) < 128)
 
 def build_command_line():
     parser = OptionParser(usage="Usage: %prog [options] url1 url2 ...urln")
@@ -42,9 +49,10 @@ def build_command_line():
     parser.add_option('-i','--images', help='Include images', action='store_true')
     parser.add_option('-f','--footer', help='Include footer with source URL', action='store_true')
     parser.add_option('-l','--links', help='Preserve links in the articles', action='store_true')
+    parser.add_option('-L','--language', help='Language')
     return parser
 
-def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=None, footer=None, links=None):
+def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=None, footer=None, links=None, language=""):
 
     if(outfile == None):
         outfile = time.strftime('%Y-%m-%d-%S.epub')
@@ -77,6 +85,7 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
         <dc:title>%(title)s</dc:title>
         <dc:creator>%(author)s</dc:creator>
         <dc:date>%(date)s</dc:date>
+        <dc:language>%(lang)s</dc:language>
         <meta name="cover" content="cover-image" />
         </metadata>
         <manifest>
@@ -135,13 +144,9 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
             widows: 2;
         }
 
-        .pagecenter{
-            width:100%;
-            height:100%;
-            position:absolute;
-            left:50%;
-            top:50%;
-            margin:-100px 0 0 -150px;
+        .centerpage{
+            text-align:center; /* center horizontally */
+            vertical-align:middle; /* center vertically */
         }
     '''
 
@@ -150,18 +155,21 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
     toc = ""
 
     for i,url in enumerate(urls):
-        print "Reading url no. %s of %s --> %s " % (i+1,nos,url)
+        print "Reading URL %s of %s --> %s " % (i+1,nos,url)
         ##try:
-        html = urllib.urlopen(url).read()
-
+        req = urllib.urlopen(url)
+        # http://stackoverflow.com/questions/1020892/urllib2-read-to-unicode
+        encoding=req.headers['content-type'].split('charset=')[-1]
+        html = req.read()
+        html = unicode(html, encoding)
         ##except:
             ##continue
         readable_article = None
         ##try:
         document = readability.Document(html)
         document.TEXT_LENGTH_THRESHOLD = 200 # Gives better results than default
-        readable_article = document.summary().encode('utf-8')
-        readable_title = document.short_title().encode('utf-8')
+        readable_article = document.summary()
+        readable_title = document.short_title()
         ##except:
             ##continue
         
@@ -170,7 +178,7 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
 
         manifest += '<item id="article_%s" href="article_%s.html" media-type="application/xhtml+xml"/>\n' % (i+1,i+1)
         spine += '<itemref idref="article_%s" />\n' % (i+1)
-        toc += '<navPoint id="navpoint-%s" playOrder="%s"> <navLabel> <text>%s</text> </navLabel> <content src="article_%s.html"/> </navPoint>' % (i+2,i+2,cgi.escape(readable_title),i+1)
+        toc += '<navPoint id="navpoint-%s" playOrder="%s"> <navLabel> <text>%s</text> </navLabel> <content src="article_%s.html"/> </navPoint>' % (i+2,i+2,repr(readable_title),i+1)
 
         try:
             soup = BeautifulSoup(readable_article)
@@ -178,10 +186,13 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
             soup.html["xmlns"] = "http://www.w3.org/1999/xhtml"
         except:
             continue
-        #Insert header
+
+        # Insert header if it is not already there
         body = soup.html.body
-        h1 = Tag(soup, "h1", [("class", "title")])
-        h1.insert(0, cgi.escape(readable_title))
+        if not(ascii_chars(readable_title) in ascii_chars(readable_article)): # TODO: FIXME, this does not work yet, e.g., for ZEIT
+            h1 = Tag(soup, "h1", [("class", "title")])
+            h1.insert(0, escape(readable_title))
+            body.insert(0, h1)
 
         if(links == None):
             refs = body.findAll('a')
@@ -193,8 +204,6 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
                 except:
                     pass
 
-        body.insert(0, h1)
-
         #Add stylesheet path
         head = soup.find('head')
         if head is None:
@@ -203,17 +212,20 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
         link = Tag(soup, "link", [("type","text/css"),("rel","stylesheet"),("href","stylesheet.css")])
         head.insert(0, link)
         article_title = Tag(soup, "title")
-        article_title.insert(0, cgi.escape(readable_title))
+        article_title.insert(0, escape(readable_title))
         head.insert(1, article_title)
-
-        # If we do not have a title for the book, then use the date
-        if(title == None):
-            title = str(time.strftime('%Y-%m-%d'))
-            # title = readable_title
 
         # If we do not have an author for the book, then use the URL hostname of the first article
         if(author == None):
             author = str(urlparse.urlparse(url).hostname.replace("www.","")) or ''
+
+        # If we do not have a title for the book, then use the date
+        if(title == None):
+            if(len(urls)>1):
+                title = author + " " + str(time.strftime('%d.%m.%Y'))
+                # title = readable_title
+            else:
+                title = readable_title
 
         if(images != None):
             #Download images
@@ -224,6 +236,7 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
                 imgpath = urlparse.urlunsplit(urlparse.urlsplit(imgfullpath)[:3]+('','',))
                 print "    Downloading image: %s %s" % (j+1, imgpath)
                 imgfile = os.path.basename(imgpath)
+                os.system("mogrify -resize 1200x1200 -quality 50 " + imgpath)
                 filename = 'article_%s_image_%s%s' % (i+1,j+1,os.path.splitext(imgfile)[1])
                 if imgpath.lower().startswith("http"):
                     epub.writestr('OEBPS/images/'+filename, urllib.urlopen(imgpath).read())
@@ -238,9 +251,10 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
         epub.writestr('OEBPS/article_%s.html' % (i+1), str(soup))
 
     #Metadata about the book
-    info = dict(title=title.encode('utf-8'),
-            author=author,
+    info = dict(title=(title).encode('ascii', 'xmlcharrefreplace'),
+            author=(author).encode('ascii', 'xmlcharrefreplace'),
             date=time.strftime('%Y-%m-%d'),
+            lang=language,
             front_cover= cpath,
             front_cover_type = ctype
             )
