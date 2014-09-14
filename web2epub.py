@@ -20,12 +20,13 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 # MA 02110-1301, USA.
 
-import zipfile, urllib, sys, os.path, mimetypes, time, urlparse
+import zipfile, urllib, sys, os.path, mimetypes, time, urlparse, lxml
 from optparse import OptionParser
 #from readability.readability import Document
 import readability
 import cssselect # readability needs it; importing here so that we see if it is not present
 from BeautifulSoup import BeautifulSoup,Tag
+
 
 from xml.sax.saxutils import escape
 
@@ -96,7 +97,7 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
             %(manifest)s
         </manifest>
         <spine toc="ncx">
-            <itemref idref="cover" linear="no"/>
+            <itemref idref="cover" linear="yes"/>
             %(spine)s
         </spine>
         <guide>
@@ -126,13 +127,17 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
         <html xmlns="http://www.w3.org/1999/xhtml">
         <head>
         <title>Cover</title>
-        <style type="text/css"> img { max-width: 100%%; } </style>
+        <style type="text/css">
+                img { max-width: 100%%; }
+                .centerpage {text-align:center; vertical-align:middle; margin-right: 100px; margin-left: 100px;}
+        </style>
         </head>
         <body>
         <div class="centerpage">
+        <img src="%(front_cover)s" alt="Cover image"/>
+        <h2>%(author)s</h2>
         <h1>%(title)s</h1>
         <div id="cover-image">
-        <img src="%(front_cover)s" alt="Cover image"/>
         </div>
         </div>
         </body>
@@ -143,27 +148,18 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
             orphans: 2;
             widows: 2;
         }
-
-        .centerpage{
-            text-align:center; /* center horizontally */
-            vertical-align:middle; /* center vertically */
-        }
     '''
 
     manifest = ""
     spine = ""
     toc = ""
+    icon = None
 
     for i,url in enumerate(urls):
         print "Reading URL %s of %s --> %s " % (i+1,nos,url)
         ##try:
         req = urllib.urlopen(url)
-        # http://stackoverflow.com/questions/1020892/urllib2-read-to-unicode
-        encoding=req.headers['content-type'].split('charset=')[-1]
         html = req.read()
-        html = unicode(html, encoding)
-        ##except:
-            ##continue
         readable_article = None
         ##try:
         document = readability.Document(html)
@@ -250,18 +246,40 @@ def web2epub(urls, outfile=None, cover=None, title=None, author=None, images=Non
 
         epub.writestr('OEBPS/article_%s.html' % (i+1), str(soup))
 
+        if(icon == None):
+            icons_xpath = '//link[contains(@rel, "icon")][contains(@href, ".png")]/@href'
+            tree = lxml.html.fromstring(html) # FIXME: This fails on some encodings!
+            # FIXME: Unicode strings with encoding declaration are not supported. Please use bytes input or XML fragments without declaration.
+            results = tree.xpath(icons_xpath)
+            try:
+                icon = urlparse.urljoin(url, sorted(results, reverse=False)[0])
+                cpath = "images/cover"
+                ctype = "image/png"
+                print(icon)
+            except:
+                pass
+
+    # This should never happen, but if it does, .encode crashes; hence we catch it
+    if(title == None):
+        title = "Unknown"
+    if(author == None):
+        author = "Unknown"
+
     #Metadata about the book
-    info = dict(title=(title).encode('ascii', 'xmlcharrefreplace'),
-            author=(author).encode('ascii', 'xmlcharrefreplace'),
+    info = dict(title=title.encode('ascii', 'xmlcharrefreplace'),
+            author=author.encode('ascii', 'xmlcharrefreplace'),
             date=time.strftime('%Y-%m-%d'),
             lang=language,
-            front_cover= cpath,
+            front_cover = cpath,
             front_cover_type = ctype
             )
 
     epub.writestr('OEBPS/cover.html', cover_tpl % info)
     if cover is not None:
         epub.write(os.path.abspath(cover),'OEBPS/images/cover'+os.path.splitext(cover)[1],zipfile.ZIP_DEFLATED)
+    else:
+        if(icon != None):
+            epub.writestr('OEBPS/images/cover', urllib.urlopen(icon).read(),zipfile.ZIP_DEFLATED)
 
     info['manifest'] = manifest
     info['spine'] = spine
